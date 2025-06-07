@@ -2,8 +2,8 @@
 """
 Terraform File Collection Pipeline - Clone Stage
 
-This script performs shallow clones of Git repositories and checks out only .tf files
-using sparse checkout. Each repository is cloned into its own directory under repos/.
+This script performs sparse clones of Git repositories and checks out only .tf files
+using the GitCliClient implementation with efficient sparse checkout.
 
 Usage:
     python clone.py [config.yaml]
@@ -15,12 +15,10 @@ Environment Variables:
 import os
 import sys
 import yaml
-import subprocess
 import logging
 import time
 import platform
-from pathlib import Path
-from urllib.parse import urlparse
+import git
 
 
 def setup_logging():
@@ -47,8 +45,78 @@ def load_config(config_path='config.yaml'):
         sys.exit(1)
 
 
-def extract_repo_name(git_url):
-    """Extract repository name from Git SSH URL."""
+class GitCliClient:
+    def __init__(self, clone_location, clone_dir_name="repos"):
+        self.clone_dir_name = clone_dir_name
+        self.clone_location = os.path.join(clone_location, self.clone_dir_name)
+        if not os.path.exists(self.clone_location):
+            os.makedirs(self.clone_location)
+
+    def clone_repo(self, project: str, repo: str, ssh_ref: str) -> None:
+        self.create_repo_path(project, repo)
+        try:
+            print(f"Cloning repository ssh ref '{project}/{repo}: {ssh_ref}'")
+            git.Repo.clone_from(
+                ssh_ref,
+                self.get_repo_path(project, repo),
+                no_checkout=True,
+                depth=1,
+                filter='tree:0'
+            )
+        except Exception as e:
+            print(f"Error cloning repository '{project}/{repo}': {e}")
+
+    def update_repo(self, project: str, repo: str) -> None:
+        try:
+            print(f"Updating existing repository '{project}/{repo}'")
+            git_repo = git.Repo(self.get_repo_path(project, repo))
+            git_repo.git.fetch('--depth', '1', '--filter', 'tree:0')
+            default_branch = git_repo.git.symbolic_ref('refs/remotes/origin/HEAD').split('/')[-1]
+            git_repo.git.update_ref(f'refs/heads/{default_branch}', f'origin/{default_branch}')
+            git_repo.git.checkout(default_branch)
+            git_repo.git.reset('--hard', 'HEAD')
+        except Exception as e:
+            print(f"Error updating repository '{project}/{repo}': {e}")
+
+    def set_sparse_checkout(self, project: str, repo: str, repo_files: list[str]) -> None:
+        repo_path = self.get_repo_path(project, repo)
+        if not os.path.exists(repo_path):
+            return
+        try:
+            git_repo = git.Repo(repo_path)
+            if repo_files:
+                print(f"Setting sparse checkout for '{project}/{repo}' to {repo_files}")
+                git_repo.git.sparse_checkout('set', '--no-cone', *repo_files)
+            else:
+                print(f"Setting sparse checkout for '{project}/{repo}' to empty")
+                git_repo.git.sparse_checkout('set', '--no-cone', '--sparse-index', '')
+                git_repo.git.checkout()
+        except Exception as e:
+            print(f"Error setting sparse checkout for '{project}/{repo}': {e}")
+
+    def disable_sparse_checkout(self, project: str, repo: str) -> None:
+        repo_path = self.get_repo_path(project, repo)
+        if not os.path.exists(repo_path):
+            return
+        try:
+            git_repo = git.Repo(repo_path)
+            print(f"Disabling sparse checkout for '{project}/{repo}'")
+            git_repo.git.sparse_checkout('disable')
+            git_repo.git.checkout()
+        except Exception as e:
+            print(f"Error disabling sparse checkout for '{project}/{repo}': {e}")
+
+    def get_repo_path(self, project: str, repo: str) -> str:
+        return os.path.join(self.clone_location, project, repo)
+
+    def create_repo_path(self, project: str, repo: str) -> None:
+        repo_path = self.get_repo_path(project, repo)
+        if not os.path.exists(repo_path):
+            os.makedirs(repo_path)
+
+
+def extract_repo_info(git_url):
+    """Extract project and repository name from Git SSH URL."""
     # Handle git@github.com:org/repo.git format
     if git_url.startswith('git@'):
         # Extract the part after the colon
@@ -56,93 +124,39 @@ def extract_repo_name(git_url):
         # Remove .git suffix if present
         if path_part.endswith('.git'):
             path_part = path_part[:-4]
-        # Return just the repo name (last part after /)
-        return path_part.split('/')[-1]
+        # Split into project and repo
+        parts = path_part.split('/')
+        if len(parts) >= 2:
+            project = parts[0]
+            repo = parts[1]
+            return project, repo
+        else:
+            logging.error(f"Invalid URL format: {git_url}")
+            return None, None
     else:
         logging.error(f"Unsupported URL format: {git_url}. Only SSH URLs are supported.")
-        return None
+        return None, None
 
 
-def run_command(cmd, cwd=None, check=True):
-    """Run a shell command and return the result."""
-    logger = logging.getLogger(__name__)
-    logger.debug(f"Running command: {' '.join(cmd)} in {cwd or 'current directory'}")
-    
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=check
-        )
-        if result.stdout:
-            logger.debug(f"Command output: {result.stdout.strip()}")
-        return result
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed: {' '.join(cmd)}")
-        logger.error(f"Error: {e.stderr}")
-        raise
-
-
-def setup_sparse_checkout(repo_dir):
-    """Configure sparse checkout to only include .tf files."""
+def clone_repository(git_client, git_url, rate_limit=0.1):
+    """Clone a single repository with sparse checkout for .tf files."""
     logger = logging.getLogger(__name__)
     
-    try:
-        # Enable sparse checkout
-        run_command(['git', 'config', 'core.sparseCheckout', 'true'], cwd=repo_dir)
-        
-        # Create sparse-checkout file
-        sparse_checkout_path = os.path.join(repo_dir, '.git', 'info', 'sparse-checkout')
-        os.makedirs(os.path.dirname(sparse_checkout_path), exist_ok=True)
-        
-        with open(sparse_checkout_path, 'w') as f:
-            f.write('*.tf\n')
-            f.write('**/*.tf\n')
-        
-        # Apply sparse checkout
-        run_command(['git', 'read-tree', '-m', '-u', 'HEAD'], cwd=repo_dir)
-        
-        logger.debug(f"Sparse checkout configured for {repo_dir}")
-        
-    except Exception as e:
-        logger.error(f"Failed to setup sparse checkout: {e}")
-        raise
-
-
-def clone_repository(git_url, repos_base_dir, rate_limit=0.1):
-    """Clone a single repository with shallow clone and sparse checkout."""
-    logger = logging.getLogger(__name__)
-    
-    repo_name = extract_repo_name(git_url)
-    if not repo_name:
+    project, repo = extract_repo_info(git_url)
+    if not project or not repo:
         return False
     
-    repo_dir = os.path.join(repos_base_dir, repo_name)
-    
-    # Remove existing directory if it exists
-    if os.path.exists(repo_dir):
-        logger.info(f"Removing existing directory: {repo_dir}")
-        import shutil
-        shutil.rmtree(repo_dir)
-    
     try:
-        logger.info(f"Cloning {git_url} to {repo_dir}")
+        logger.info(f"Cloning {git_url}")
         
-        # Shallow clone with depth 1
-        run_command([
-            'git', 'clone',
-            '--depth', '1',
-            '--no-checkout',
-            git_url,
-            repo_dir
-        ])
+        # Clone the repository
+        git_client.clone_repo(project, repo, git_url)
         
-        # Setup sparse checkout for .tf files only
-        setup_sparse_checkout(repo_dir)
+        # Set sparse checkout for .tf files only
+        tf_patterns = ['*.tf', '**/*.tf']
+        git_client.set_sparse_checkout(project, repo, tf_patterns)
         
-        logger.info(f"Successfully cloned {repo_name}")
+        logger.info(f"Successfully cloned {project}/{repo} with sparse checkout for .tf files")
         
         # Rate limiting
         if rate_limit > 0:
@@ -178,10 +192,9 @@ def main():
     
     logger.info(f"Found {len(repositories)} repositories to clone")
     
-    # Ensure repos directory exists
+    # Initialize Git client
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    repos_base_dir = os.path.join(script_dir, 'repos')
-    os.makedirs(repos_base_dir, exist_ok=True)
+    git_client = GitCliClient(script_dir)
     
     # Track results
     successful_clones = []
@@ -190,7 +203,7 @@ def main():
     
     # First pass: clone all repositories
     for repo_url in repositories:
-        if clone_repository(repo_url, repos_base_dir, rate_limit):
+        if clone_repository(git_client, repo_url, rate_limit):
             successful_clones.append(repo_url)
         else:
             failed_clones.append(repo_url)
@@ -203,7 +216,7 @@ def main():
         
         for repo_url in retry_queue:
             logger.info(f"Retrying {repo_url}")
-            if clone_repository(repo_url, repos_base_dir, rate_limit):
+            if clone_repository(git_client, repo_url, rate_limit):
                 successful_clones.append(repo_url)
                 failed_clones.remove(repo_url)
             else:
