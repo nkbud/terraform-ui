@@ -4,11 +4,12 @@ This directory contains the backend pipeline for collecting, overriding, and pul
 
 ## Overview
 
-The collection pipeline consists of three main stages:
+The collection pipeline consists of four main components:
 
-1. **Clone Stage** (`clone.py`) - Shallow clone repositories and checkout only `.tf` files
-2. **Override Stage** (`override.py`) - Copy override `.tf` files into cloned repositories  
-3. **Pull Stage** (`pull.py`) - Run `terraform init` and `terraform state pull` to fetch state files
+1. **Repository Discovery** (`repos.py`) - Discover repositories from Bitbucket and generate repos.yaml
+2. **Clone Stage** (`clone.py`) - Shallow clone repositories and checkout only `.tf` files
+3. **Override Stage** (`override.py`) - Copy override `.tf` files into cloned repositories  
+4. **Pull Stage** (`pull.py`) - Run `terraform init` and `terraform state pull` to fetch state files
 
 ## Prerequisites
 
@@ -73,7 +74,7 @@ choco install terraform
 #### Python Dependencies
 
 ```bash
-pip install pyyaml
+pip install pyyaml requests
 ```
 
 ## Configuration
@@ -91,17 +92,51 @@ repositories:
 # Optional: Configure rate limiting between clones (seconds)
 rate_limit: 0.1
 
-# Optional: Configure override source directories
-override_sources:
-  - ./aws_deployment_overrides
-  - ./k8s/deployment/overrides
+# Configuration for automatic repository discovery from Bitbucket
+# Run 'python repos.py' to generate repos.yaml from these settings
+bitbucket:
+  server:
+    url: "https://bitbucket.example.com"
+    username: "your-username"
+    password: "your-app-password"  # or set BITBUCKET_SERVER_PASSWORD env var
+    projects:
+      - name: "TERRAFORM"
+        repo_pattern: "terraform-.*"
+      - name: "INFRA" 
+        repo_pattern: ".*-terraform"
+  cloud:
+    username: "your-username"
+    app_password: "your-app-password"  # or set BITBUCKET_CLOUD_APP_PASSWORD env var
+    workspaces:
+      - name: "my-workspace"
+        repo_pattern: "terraform-.*"
+      - name: "infra-workspace"
+        repo_pattern: ".*-infrastructure"
 ```
 
 ### Configuration Options
 
 - **repositories** (required): List of Git SSH URLs to clone
 - **rate_limit** (optional): Seconds to wait between repository clones (default: 0.1)
-- **override_sources** (optional): Directories containing override `.tf` files (default: `./aws_deployment_overrides` and `./k8s/deployment/overrides`)
+- **bitbucket** (optional): Configuration for automatic repository discovery from Bitbucket Server and Cloud
+
+### Repository Discovery
+
+Instead of manually maintaining a list of repositories, you can use the repository discovery feature to automatically find repositories from Bitbucket:
+
+```bash
+# Generate repos.yaml from Bitbucket configuration
+python repos.py config.yaml
+
+# Use the discovered repositories
+python clone.py repos.yaml
+```
+
+The discovery process supports:
+- **Bitbucket Server**: Query projects using project keys and regex patterns
+- **Bitbucket Cloud**: Query workspaces using workspace names and regex patterns
+- **Regex filtering**: Filter repositories by name using regular expressions
+- **SSH URL extraction**: Automatically extracts SSH clone URLs for use with clone.py
 
 ## Usage
 
@@ -110,8 +145,11 @@ override_sources:
 Each stage can be run independently:
 
 ```bash
-# Stage 1: Clone repositories
+# Stage 0: Discover repositories (optional)
 cd backend/collect
+python repos.py [config.yaml]
+
+# Stage 1: Clone repositories
 python clone.py [config.yaml]
 
 # Stage 2: Apply overrides
@@ -127,7 +165,12 @@ Run all stages in sequence:
 
 ```bash
 cd backend/collect
+
+# Option 1: Use manual repository list
 python clone.py && python override.py && python pull.py
+
+# Option 2: Use repository discovery
+python repos.py && python clone.py repos.yaml && python override.py repos.yaml && python pull.py repos.yaml
 ```
 
 ### Using Custom Configuration
@@ -154,16 +197,34 @@ export LOG_LEVEL=INFO
 python clone.py
 ```
 
+### Authentication
+
+For repository discovery, you can provide credentials via environment variables:
+
+```bash
+# Bitbucket Server
+export BITBUCKET_SERVER_PASSWORD="your-app-password"
+
+# Bitbucket Cloud  
+export BITBUCKET_CLOUD_APP_PASSWORD="your-app-password"
+
+python repos.py
+```
+
 ## Directory Structure
 
 After running the pipeline, the directory structure will be:
 
 ```
 backend/collect/
-├── clone.py                 # Clone stage script
+├── repos.py                # Repository discovery script
+├── clone.py                # Clone stage script
 ├── override.py             # Override stage script  
 ├── pull.py                 # Pull stage script
+├── main.py                 # Pipeline orchestrator
 ├── README.md               # This file
+├── config.yaml             # Configuration file
+├── repos.yaml              # Discovered repositories (generated)
 └── repos/                  # Cloned repositories
     ├── repo1/
     │   ├── *.tf           # Original .tf files from repo
@@ -174,6 +235,27 @@ backend/collect/
 ```
 
 ## Stage Details
+
+### Repository Discovery (`repos.py`)
+
+**What it does:**
+- Connects to Bitbucket Server and/or Bitbucket Cloud APIs
+- Discovers repositories from configured projects/workspaces
+- Filters repositories using regex patterns on repository names
+- Extracts SSH clone URLs for each matching repository
+- Generates a `repos.yaml` file compatible with clone.py
+
+**Requirements:**
+- Network access to Bitbucket instances
+- Valid credentials (username/password for Server, username/app-password for Cloud)
+- Python `requests` library
+
+**Authentication:**
+- **Bitbucket Server**: Username and password/app-password
+- **Bitbucket Cloud**: Username and app password (not account password)
+
+**Output:**
+- `repos.yaml` file containing discovered SSH repository URLs
 
 ### Clone Stage (`clone.py`)
 

@@ -10,7 +10,23 @@ repositories:
 # Optional: Configure rate limiting between clones (seconds)
 # rate_limit: 0.1
 
-# Optional: Configure override source directories
-# override_sources:
-#   - ./aws_deployment_overrides
-#   - ./k8s/deployment/overrides
+# Configuration for automatic repository discovery from Bitbucket
+# Run 'python repos.py' to generate repos.yaml from these settings
+bitbucket:
+  server:
+    url: "https://bitbucket.example.com"
+    username: "your-username"
+    password: "your-app-password"  # or set BITBUCKET_SERVER_PASSWORD env var
+    projects:
+      - name: "TERRAFORM"
+        repo_pattern: "terraform-.*"
+      - name: "INFRA" 
+        repo_pattern: ".*-terraform"
+  cloud:
+    username: "your-username"
+    app_password: "your-app-password"  # or set BITBUCKET_CLOUD_APP_PASSWORD env var
+    workspaces:
+      - name: "my-workspace"
+        repo_pattern: "terraform-.*"
+      - name: "infra-workspace"
+        repo_pattern: ".*-infrastructure"

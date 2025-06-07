@@ -3,9 +3,14 @@
 Terraform File Collection Pipeline - Main Orchestrator
 
 This script orchestrates the complete pipeline by running clone, override, and pull stages in sequence.
+Optionally includes repository discovery stage if --discover flag is provided.
 
 Usage:
     python main.py [config.yaml]
+    python main.py --discover [config.yaml]
+    
+Options:
+    --discover    Run repository discovery before clone stage
     
 Environment Variables:
     LOG_LEVEL - Set to DEBUG or INFO for different verbosity levels
@@ -52,20 +57,41 @@ def main():
     """Main function to orchestrate the complete pipeline."""
     logger = setup_logging()
     
-    # Get config file path from command line or use default
-    config_path = sys.argv[1] if len(sys.argv) > 1 else 'config.yaml'
+    # Parse command line arguments
+    args = sys.argv[1:]
+    discover = False
+    config_path = 'config.yaml'
+    
+    if '--discover' in args:
+        discover = True
+        args.remove('--discover')
+    
+    if args:
+        config_path = args[0]
     
     logger.info("Starting Terraform File Collection Pipeline")
     
     # Pipeline stages in order
-    stages = [
+    stages = []
+    
+    if discover:
+        stages.append('repos.py')
+        # Use repos.yaml for subsequent stages if discovery is used
+        subsequent_config = 'repos.yaml'
+    else:
+        subsequent_config = config_path
+    
+    stages.extend([
         'clone.py',
         'override.py', 
         'pull.py'
-    ]
+    ])
     
-    for stage in stages:
-        if not run_stage(stage, config_path):
+    for i, stage in enumerate(stages):
+        # Use original config for repos.py, generated repos.yaml for others if discover mode
+        stage_config = config_path if stage == 'repos.py' else (subsequent_config if discover else config_path)
+        
+        if not run_stage(stage, stage_config):
             logger.error(f"Pipeline failed at stage: {stage}")
             sys.exit(1)
     
