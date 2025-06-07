@@ -1,0 +1,16 @@
+# Example configuration file for Terraform Collection Pipeline
+# List of Git repositories to collect .tf files from
+# Only SSH URLs are supported (git@github.com:org/repo.git format)
+
+repositories:
+  - git@github.com:hashicorp/terraform-aws-modules.git
+  - git@github.com:terraform-aws-modules/terraform-aws-vpc.git
+  - git@github.com:terraform-aws-modules/terraform-aws-security-group.git
+  
+# Optional: Configure rate limiting between clones (seconds)
+# rate_limit: 0.1
+
+# Optional: Configure override source directories
+# override_sources:
+#   - ./aws_deployment_overrides
+#   - ./k8s/deployment/overrides
